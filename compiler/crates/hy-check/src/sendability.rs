@@ -1890,7 +1890,16 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::SliceLit { elem, items, .. } => {
-                if let Some(elem_ty) = elem {
+                // Issue #2238: an array literal `[N]T{…}` stores the OUTER
+                // `TypeExpr::Array` in `elem`, so handing `elem` straight to
+                // `check_expr_against_ty` compared a channel element against
+                // `[N]T` and found no direction conflict. Take the element
+                // type, as `check_composite_nils` already does.
+                let elem_ty = expr
+                    .as_array_lit()
+                    .map(|(_, inner_elem, _)| inner_elem)
+                    .or(elem.as_deref());
+                if let Some(elem_ty) = elem_ty {
                     for i in items {
                         self.check_expr_against_ty(i, elem_ty, env);
                     }
@@ -2031,7 +2040,14 @@ impl<'a> Checker<'a> {
         if let Some(got_ty) = self.dir_ty_of_expr(expr, env) {
             self.check_chan_dir_coercion(&got_ty, want_ty, expr.span(), &expr.render());
         }
-        match unwrap_parens(expr) {
+        // Issue #2238: `move {ch: sc}` / `move {sc}` are type-elided
+        // composite literals too, so peel `move` before matching —
+        // otherwise the elided-literal validation below never ran.
+        let mut peeled = unwrap_parens(expr);
+        while let Expr::Move { operand, .. } = peeled {
+            peeled = unwrap_parens(operand);
+        }
+        match peeled {
             Expr::StructLit {
                 ty: None, fields, ..
             } => {
