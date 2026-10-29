@@ -654,6 +654,41 @@ impl<'a> Checker<'a> {
                     _ => None,
                 }
             }
+            // Issue #2119: receive and re-slice initializers must carry their
+            // as-written type — otherwise `v := <-ch` / `sub := xs[0:1]` bind
+            // with `Binding.ty = None` and the passes keyed on it (E6002
+            // assign overflow, E2009 range bounds, E2002 fn-value arity)
+            // silently skip the binding.
+            Expr::Receive { chan, .. } => {
+                let chan_ty = self.ty_of_expr(st, chan)?;
+                match self.resolve_type_alias(&chan_ty) {
+                    TypeExpr::Chan { elem, .. } => Some(*elem),
+                    _ => None,
+                }
+            }
+            Expr::Slice { base, span, .. } => {
+                let base_ty = self.ty_of_expr(st, base)?;
+                let resolved = self.resolve_type_alias(&base_ty);
+                let elem = match &resolved {
+                    TypeExpr::Slice { elem, .. } | TypeExpr::Array { elem, .. } => &**elem,
+                    // `pa[0:2]` over a pointer-to-array auto-derefs in Go
+                    TypeExpr::Pointer { to, .. } => match &**to {
+                        TypeExpr::Slice { elem, .. } | TypeExpr::Array { elem, .. } => &**elem,
+                        _ => return None,
+                    },
+                    // a string (or an alias resolving to one) re-slices to string
+                    TypeExpr::Named { name, .. }
+                        if Self::base_named_type_str(name) == "string" =>
+                    {
+                        return Some(resolved);
+                    }
+                    _ => return None,
+                };
+                Some(TypeExpr::Slice {
+                    elem: Box::new(elem.clone()),
+                    span: *span,
+                })
+            }
             Expr::StructLit { ty, .. } => ty.clone(),
             Expr::MapLit {
                 key, value, span, ..
@@ -723,7 +758,25 @@ impl<'a> Checker<'a> {
                         });
                     }
                     if name == "make" {
-                        return args.first().and_then(|a| self.ty_of_expr(st, &a.value));
+                        // Issue #2119: `make(byte_chan, 1)` names a type alias
+                        // in type position — the ident is not a value binding,
+                        // so `ty_of_expr` on it yields nothing; consult the
+                        // alias table directly.
+                        if let Some(first) = args.first() {
+                            if let Expr::Ident { name: tname, .. } =
+                                crate::model::unwrap_parens(&first.value)
+                            {
+                                if self.lookup_binding(st, tname).is_none() {
+                                    if let Some(t) =
+                                        self.type_aliases.get(Self::base_named_type_str(tname))
+                                    {
+                                        return Some(t.clone());
+                                    }
+                                }
+                            }
+                            return self.ty_of_expr(st, &first.value);
+                        }
+                        return None;
                     }
                     if args.len() == 1 {
                         let is_type_name = crate::const_overflow::fixed_width_int_range(name).is_some()
@@ -1210,8 +1263,22 @@ impl<'a> Checker<'a> {
         let v = crate::model::unwrap_parens(value);
         if n_names == 2 {
             if let Expr::Index { base, .. } = v {
-                if let Some(TypeExpr::Map { value: val_ty, .. }) = self.ty_of_expr(st, base) {
-                    return vec![Some(*val_ty), None];
+                if let Some(t) = self.ty_of_expr(st, base) {
+                    // Issue #2119: resolve aliases so `v, ok := aliased_map[k]`
+                    // propagates the map's value type.
+                    if let TypeExpr::Map { value: val_ty, .. } = self.resolve_type_alias(&t) {
+                        return vec![Some(*val_ty), None];
+                    }
+                }
+            }
+            // Issue #2119: `v, ok := <-ch` binds the channel element type
+            // (mirrors `multi_value_shapes`); the `ok` flag is the compiler's
+            // own bool, so its as-written type stays `None`.
+            if let Expr::Receive { chan, .. } = v {
+                if let Some(t) = self.ty_of_expr(st, chan) {
+                    if let TypeExpr::Chan { elem, .. } = self.resolve_type_alias(&t) {
+                        return vec![Some(*elem), None];
+                    }
                 }
             }
         }
