@@ -61,9 +61,14 @@ jobs:
           python3 -m unittest discover -s tools -p test_check_test_registration.py -v
           python3 -m unittest discover -s tools -p test_package_version.py -v
           python3 -m unittest discover -s tools -p test_corpus_utf8.py -v
+          python3 -m unittest discover -s tools -p test_check_claims_links.py -v
           # Fail closed if any tools/**/test_*.py is matched by no -p pattern
           # above: a suite outside this list would pass CI by never running.
           python3 tools/check_test_registration.py
+          # Every evidence link cited by GUARANTEES.md must resolve, and a
+          # corpus citation marked (accept)/(reject)/(managed) must agree with
+          # the program's EXPECTED-VERDICT header.
+          python3 tools/check_claims_links.py
           # runner self-test: execute a trivial inline job end-to-end
           mkdir -p /tmp/selftest && cd /tmp/selftest
           cat > job.json <<'EOF'

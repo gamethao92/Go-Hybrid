@@ -50,7 +50,9 @@ check:
 	@$(PY) -m unittest discover -s tools/runner -p test_runner.py -v
 	@$(PY) -m unittest discover -s tools -p test_check_test_registration.py -v
 	@$(PY) -m unittest discover -s tools -p test_check_corpus_census.py -v
+	@$(PY) -m unittest discover -s tools -p test_check_claims_links.py -v
 	@$(PY) tools/check_corpus_census.py && echo "corpus census OK"
+	@$(PY) tools/check_claims_links.py && echo "claims links OK"
 	@$(PY) tools/check_test_registration.py && echo "test registration OK"
 	@bash tools/check-versions.sh --no-toolchain && echo "versions OK"
 	@$(PY) tools/check_conflict_markers.py && echo "conflict markers OK"
