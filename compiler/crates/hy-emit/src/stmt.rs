@@ -180,6 +180,29 @@ impl Emitter {
                 // Go select, 1:1 — Hybrid's arm spelling
                 // (`v, ok := <-sq:` / `<-deadline:` / `ch <- v:`) lowers to
                 // Go's case clauses.
+                // Issue #1902: arm-header `?` (Recv chan, Send chan/value)
+                // hoists BEFORE `select {` — Go evaluates the arm channel (and
+                // send-value) expressions in source order before the select
+                // blocks, so the hoisted propagation keeps that order, and
+                // `emit_expr` in the case heads below sees only hoisted temps
+                // (an unhoisted `?` there is `unsupported: ? outside a binding
+                // position`).
+                for arm in arms {
+                    match &arm.kind {
+                        SelectArmKind::Recv { chan, .. } => {
+                            self.hoist_tries_expr(chan)?;
+                        }
+                        SelectArmKind::Send { chan, value, .. } => {
+                            if Self::expr_has_hoistable_try(value) {
+                                self.hoist_order_before_try(chan)?;
+                            } else {
+                                self.hoist_tries_expr(chan)?;
+                            }
+                            self.hoist_tries_expr(value)?;
+                        }
+                        SelectArmKind::Default => {}
+                    }
+                }
                 self.push("select {");
                 self.indent += 1;
                 for arm in arms {

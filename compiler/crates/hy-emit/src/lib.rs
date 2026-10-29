@@ -1664,7 +1664,19 @@ impl Emitter {
                             || self.block_has_try(&a.body)
                     })
             }
-            Stmt::Select { arms, .. } => arms.iter().any(|a| self.block_has_try(&a.body)),
+            // Issue #1902: `?` in a select arm HEADER (`v := <-get_chan()? =>
+            // {}`, `ch <- next_val()? => {}`) also needs the E6 `hyErr`
+            // wrapper — the hoisted propagation lands in the enclosing body.
+            Stmt::Select { arms, .. } => arms.iter().any(|a| {
+                let head_try = match &a.kind {
+                    SelectArmKind::Recv { chan, .. } => self.expr_has_try(chan),
+                    SelectArmKind::Send { chan, value, .. } => {
+                        self.expr_has_try(chan) || self.expr_has_try(value)
+                    }
+                    SelectArmKind::Default => false,
+                };
+                head_try || self.block_has_try(&a.body)
+            }),
             Stmt::Break { .. } | Stmt::Continue { .. } => false,
         }
     }
