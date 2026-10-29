@@ -1164,6 +1164,13 @@ impl<'a> Checker<'a> {
                 len,
             );
         }
+        // Issue #2102: builtin calls inside a length expression are Go
+        // compile errors exactly like value position (`invalid argument: 1
+        // for built-in len`, arity errors) — the SAME predicate, mirrored
+        // onto the type-expression site (#999/#758 pattern).
+        // `check_type_ref_array_lens` already reaches every array length
+        // across declarations, so one call here closes the gap everywhere.
+        self.check_expr_builtin_args(len);
         // 1) A constant integer expression: must be non-negative.
         let direct_or_folded = const_int_value(len).or_else(|| {
             if matches!(unwrap_parens(len), Expr::Ident { .. }) {
