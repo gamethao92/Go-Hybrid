@@ -997,9 +997,51 @@ const TWO_POW_512: &str = "13407807929942597099574024998205846127479365820592393
 
 fn lit_below_2_512(s: &str) -> bool {
     let t = s.replace('_', "");
-    let t = t.trim_start_matches('0');
-    let t = if t.is_empty() { "0" } else { t };
-    let t = t.strip_prefix('-').unwrap_or(t);
+    // Issue #2229: the boundary is a VALUE, not a token length. Hex/octal/
+    // binary spellings of the same number have different raw lengths, so
+    // the decimal-digit comparison below is only sound for radix 10.
+    // 2^512 in radix-r digits: hex 0x1 + 128 zeros, octal 0o1 + 171 zeros,
+    // binary 0b1 + 512 zeros.
+    let (prefixed, radix) = if let Some(rest) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"))
+    {
+        (Some(rest), 16)
+    } else if let Some(rest) = t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")) {
+        (Some(rest), 8)
+    } else if let Some(rest) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
+        (Some(rest), 2)
+    } else if t.len() > 1 && t.starts_with('0') {
+        (Some(&t[1..]), 8) // legacy octal, matching parse_int_lit
+    } else {
+        (None, 10)
+    };
+    if let Some(digits) = prefixed {
+        let d = digits.trim_start_matches('0');
+        if d.is_empty() {
+            return true;
+        }
+        // Exact bit length of the leading digit; the rest contribute the
+        // full radix width each. (Widths are `u64`: an `int`-typed match
+        // would silently unify the arms and truncate octal to width 1.)
+        let width: u64 = match radix { 16 => 4, 8 => 3, _ => 1 };
+        // bit_length(leading digit) - 1; the remaining digits each add
+        // the full radix width.
+        let msb_bits: u64 = match radix {
+            16 => match d.as_bytes()[0] {
+                b'1' => 0,
+                b'2'..=b'3' => 1,
+                b'4'..=b'7' => 2,
+                _ => 3,
+            },
+            8 => match d.as_bytes()[0] {
+                b'1' => 0,
+                b'2'..=b'3' => 1,
+                _ => 2,
+            },
+            _ => 0, // binary, leading digit is 1 after zero-trim
+        };
+        return msb_bits + (d.len() as u64 - 1) * width < 512;
+    }
+    let t = if t.is_empty() { "0" } else { &*t };
     match t.len().cmp(&TWO_POW_512.len()) {
         std::cmp::Ordering::Less => true,
         std::cmp::Ordering::Greater => false,
@@ -1546,5 +1588,19 @@ mod unit {
         );
         assert_eq!(target_int_range(), (i64::MIN as i128, i64::MAX as i128));
         assert_eq!(target_uint_range(), (0, u64::MAX as i128));
+    }
+
+    #[test]
+    fn radix_boundaries_decide_by_value() {
+        let hex_b = format!("0x1{}", "0".repeat(128));
+        let oct_b = format!("0o1{}", "0".repeat(171));
+        let oct_max = format!("0o3{}", "7".repeat(170));
+        let hex_max = format!("0x{}", "f".repeat(128));
+        let leg_b = format!("01{}", "0".repeat(171));
+        assert!(!lit_below_2_512(&hex_b), "hex boundary");
+        assert!(lit_below_2_512(&hex_max), "hex max-below");
+        assert!(!lit_below_2_512(&oct_b), "oct boundary");
+        assert!(lit_below_2_512(&oct_max), "oct max-below");
+        assert!(!lit_below_2_512(&leg_b), "legacy oct boundary");
     }
 }
