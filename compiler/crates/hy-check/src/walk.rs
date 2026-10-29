@@ -865,8 +865,16 @@ pub(crate) fn place_field_store_slot(place: &Place) -> Option<(String, Option<St
 }
 
 fn lit_index_key(index: &Expr) -> Option<String> {
-    match crate::model::unwrap_parens(index) {
-        e @ Expr::Lit { .. } => Some(e.render()),
+    let e = crate::model::unwrap_parens(index);
+    // Issue #2226: rule O8 compares slot keys by string, so the raw token
+    // would call `m[10]` and `m[0xA]` (or `m['\n']`) provably distinct keys
+    // while they are the same runtime slot. Canonicalize integer-valued
+    // literals to their value; non-integer literals keep their rendering.
+    if let Some(v) = crate::const_overflow::const_int_value(e) {
+        return Some(format!("int:{v}"));
+    }
+    match e {
+        Expr::Lit { .. } => Some(e.render()),
         _ => None,
     }
 }
