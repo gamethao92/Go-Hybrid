@@ -25,6 +25,8 @@ from pathlib import Path
 TABLE_HEADING = "## The claims table"
 ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|")
 LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+INLINE_CORPUS_RE = re.compile(r"`(\d{2}-[a-z0-9][a-z0-9-]*(?:\.hy)?)`")
+CORPUS_NUM_RE = re.compile(r"\bcorpus\s+(\d{1,3})\b")
 MARKER_RE = re.compile(r"^\s*\((reject|accept|managed)\)", re.IGNORECASE)
 VERDICT_RE = re.compile(r"EXPECTED-VERDICT:\s*([A-Za-z-]+)")
 CHECKED_SUFFIXES = {
@@ -87,6 +89,7 @@ def check(root):
     issues = []
     rows = 0
     links = 0
+    refs = 0
     if not claims_file.is_file():
         return {"ok": False, "rows": 0, "links": 0,
                 "issues": [{"row": 0, "kind": "missing-claims-file", "target": str(claims_file)}]}
@@ -122,7 +125,30 @@ def check(root):
                     "expected": marker.upper(),
                     "found": verdict,
                 })
-    return {"ok": not issues, "rows": rows, "links": links, "issues": issues}
+        # Inline corpus references: `34-select-send-unproven-name` and plain "corpus 16".
+        inline_seen = set()
+        for match in INLINE_CORPUS_RE.finditer(evidence):
+            name = match.group(1)
+            if not name.endswith(".hy"):
+                name += ".hy"
+            target = "tests/checker-corpus/" + name
+            if target in inline_seen:
+                continue
+            inline_seen.add(target)
+            refs += 1
+            if not (root / target).is_file():
+                issues.append({"row": row_number, "kind": "missing-inline-corpus", "target": target})
+        corpus_dir = root / "tests" / "checker-corpus"
+        numbers_seen = set()
+        for match in CORPUS_NUM_RE.finditer(evidence):
+            number = match.group(1)
+            if number in numbers_seen:
+                continue
+            numbers_seen.add(number)
+            refs += 1
+            if corpus_dir.is_dir() and not list(corpus_dir.glob("%02d-*.hy" % int(number))):
+                issues.append({"row": row_number, "kind": "missing-corpus-number", "target": number})
+    return {"ok": not issues, "rows": rows, "links": links, "refs": refs, "issues": issues}
 
 
 def main(argv=None):
@@ -135,8 +161,8 @@ def main(argv=None):
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        print("GUARANTEES evidence links: %d row(s), %d link(s), %d issue(s)"
-              % (report["rows"], report["links"], len(report["issues"])))
+        print("GUARANTEES evidence: %d row(s), %d link(s), %d inline ref(s), %d issue(s)"
+              % (report["rows"], report["links"], report["refs"], len(report["issues"])))
         for issue in report["issues"]:
             print("- row %s: %s %s" % (issue["row"], issue["kind"], issue["target"]))
     return 0 if report["ok"] else 1
